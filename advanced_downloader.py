@@ -1,6 +1,6 @@
 """
 Advanced Pothole Dataset Downloader with Real Internet Sources
-This script helps download real pothole datasets from various sources
+This script helps download real pothole datasets from various source
 """
 
 import os
