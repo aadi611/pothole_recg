@@ -1,0 +1,25 @@
+
+        POTHOLE DETECTION DATASETS - DOWNLOAD INSTRUCTIONS:
+        
+        1. ROBOFLOW DATASETS (Recommended):
+           - Visit: https://universe.roboflow.com/search?q=pothole
+           - Search for "pothole detection" 
+           - Choose a dataset with good annotations
+           - Download in YOLO or COCO format
+           
+        2. KAGGLE DATASETS:
+           - andrewmvd/pothole-detection-dataset (Object detection format)
+           - sachinpatel21/pothole-image-dataset (Classification format)
+           - chitholian/annotated-potholes-dataset
+           
+        3. GITHUB REPOSITORIES:
+           - https://github.com/potholedetection/pothole-detection-dataset
+           - https://github.com/niennte/pothole-detection
+           
+        4. MANUAL COLLECTION:
+           - Use Google Images with proper licensing
+           - Capture your own images with phone/camera
+           - Use dashcam footage for real-world scenarios
+           
+        For this demo, we'll create a sample structure and you can add your images later.
+        
