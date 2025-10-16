@@ -3,8 +3,7 @@ import requests
 import zipfile
 import shutil
 from tqdm import tqdm
-import cv2
-import numpy as np
+
 from pathlib import Path
 
 class PotholeDatasetDownloader:
