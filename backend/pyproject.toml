@@ -51,9 +51,11 @@ detection = [
     "torchvision>=0.20,<1",
 ]
 
+# Training uses Ultralytics' built-in augmentation pipeline, which is already
+# per-epoch and bbox-aware. See ADR-004 — a second pipeline on top of it
+# degrades training rather than improving it.
 training = [
     "roadwatch[detection]",
-    "albumentations>=1.4.21,<2",
 ]
 
 edge = [

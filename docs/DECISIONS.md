@@ -68,6 +68,49 @@ to the pipeline.
 
 ---
 
+## ADR-004 — Drop the ported Albumentations pipeline; use Ultralytics' built-in augmentation
+
+**Date:** 2026-08-18
+**Status:** Accepted
+**Supersedes:** the augmentation salvage described in `AUDIT.md` §B and §D
+
+**Context.** `AUDIT.md` identified the old project's Albumentations recipe as
+one of only two reusable assets, and it was ported to
+`backend/roadwatch/training/augment.py` with `bbox_params` added so boxes
+travel with the image.
+
+Two things then emerged:
+
+1. `albumentations >= 1.4.8` depends on `stringzilla`, which has no cp311
+   Windows wheel and fails to build without a C toolchain. Only 1.4.0 installs
+   cleanly on this machine.
+2. Ultralytics applies its own augmentation per-epoch and bbox-aware, enabled
+   by default: `hsv_h/s/v`, `translate 0.1`, `scale 0.5`, `fliplr 0.5`,
+   `mosaic 1.0`, `erasing 0.4`, plus randaugment. This covers the ported
+   recipe almost entirely.
+
+**Decision.** Delete `augment.py`, drop the `albumentations` dependency, and
+use Ultralytics' pipeline, tuning it through `scripts/train_detector.py`
+arguments where the defaults are wrong for dashcam footage.
+
+**Consequence.** Applying both pipelines would augment twice — a
+scale-jittered, HSV-shifted image being scale-jittered and HSV-shifted again
+— which degrades training rather than improving it. Keeping the module while
+*not* using it would leave dead code plus a dependency pinned four minor
+versions back for no benefit.
+
+The cost is losing the road-specific transforms Ultralytics does not offer:
+`RandomShadow`, `RandomSunFlare`, `RandomFog`, and explicit motion blur. These
+matter for Indian conditions (dust haze, harsh sun, wet tarmac). If validation
+shows weakness there, the right fix is a custom Ultralytics dataset transform
+rather than a parallel pipeline — recorded here so the reasoning is not lost.
+
+This means the salvage from the original project is now `docs/DATASETS.md`
+alone. The audit's conclusion stands and is strengthened: there was
+essentially nothing reusable in the old codebase.
+
+---
+
 ## ADR-003 — `str, Enum` retained over `StrEnum`
 
 **Date:** 2026-08-18
