@@ -40,9 +40,13 @@ class Frame:
 class FrameSource(Protocol):
     """A source of frames.
 
-    Implementations must not block indefinitely. ``read()`` returning None
-    means the stream ended; transient failures are handled internally with
-    backoff (FR-CAM-04).
+    Implementations must not block indefinitely.
+
+    ``read()`` returning None is deliberately ambiguous between "the stream
+    ended" and "this read failed but the next may succeed" — a file at EOF and
+    a camera with a dropped USB packet look identical to the consumer.
+    ``is_exhausted`` disambiguates them: without it the capture thread must
+    spin on retries at EOF, inflating the failure count and delaying shutdown.
     """
 
     def open(self) -> None:
@@ -50,7 +54,17 @@ class FrameSource(Protocol):
         ...
 
     def read(self) -> Frame | None:
-        """Return the next frame, or None when the stream is exhausted."""
+        """Return the next frame, or None if none is available right now."""
+        ...
+
+    @property
+    def is_exhausted(self) -> bool:
+        """True when no further frames will ever arrive.
+
+        A finished video file is exhausted. A live camera never is — it can
+        always recover — so it returns False and relies on the consumer's
+        failure ceiling instead.
+        """
         ...
 
     def close(self) -> None:

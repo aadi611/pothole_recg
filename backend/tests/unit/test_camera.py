@@ -164,6 +164,56 @@ def test_stop_is_idempotent() -> None:
     cap.stop()
 
 
+def test_eof_is_not_counted_as_a_read_failure() -> None:
+    """A file ending is normal, not an error.
+
+    Regression: read() returning None conflated EOF with a transient glitch,
+    so finishing a video logged 100+ phantom failures and spun for seconds
+    before stopping.
+    """
+    with CaptureThread(SyntheticSource(frames=10), queue_size=4) as cap:
+        while cap.next_frame(timeout=2.0) is not None:
+            pass
+    assert cap.metrics.read_failures == 0
+    assert cap.metrics.frames_read == 10
+
+
+def test_exhausted_source_stops_the_producer_promptly() -> None:
+    """The capture thread must exit at EOF, not spin on retries.
+
+    Timed on the producer finishing rather than on next_frame() returning,
+    since the final next_frame() legitimately waits out its own timeout on a
+    drained queue.
+    """
+    cap = CaptureThread(SyntheticSource(frames=5), queue_size=16)
+    started = time.monotonic()
+    cap.start()
+    cap._exhausted.wait(timeout=3.0)
+    elapsed = time.monotonic() - started
+    cap.stop()
+
+    assert cap._exhausted.is_set(), "producer did not finish"
+    assert elapsed < 1.0, f"producer took {elapsed:.2f}s to notice EOF"
+    assert cap.metrics.read_failures == 0
+
+
+def test_lossless_mode_drops_nothing_for_a_slow_consumer() -> None:
+    """Offline file analysis must see every frame (NFR-TST-02).
+
+    Dropping 94% of the regression fixture would mean not testing against it.
+    """
+    cap = CaptureThread(SyntheticSource(frames=40), queue_size=2, drop_frames=False)
+    cap.start()
+    seen = []
+    while (frame := cap.next_frame(timeout=3.0)) is not None:
+        seen.append(frame.frame_id)
+        time.sleep(0.002)
+    cap.stop()
+
+    assert seen == list(range(40))
+    assert cap.metrics.frames_dropped == 0
+
+
 def test_rolling_buffer_populated_during_capture() -> None:
     with CaptureThread(SyntheticSource(frames=50), queue_size=2, buffer_size=10) as cap:
         while cap.next_frame(timeout=2.0) is not None:
@@ -191,6 +241,21 @@ def test_adaptive_strategy_throttles_to_target_rate() -> None:
     processed = sum(1 for i in range(200) if s.should_process(_frame(i)))
     # 200 frames arriving instantly must not all run inference.
     assert processed < 200
+
+
+def test_frame_id_strategies_are_independent_of_read_speed() -> None:
+    """every_nth must not depend on how fast the file is read.
+
+    Adaptive paces on the wall clock, which is right for a live camera but
+    means a video replayed faster than realtime gets almost no inference.
+    """
+    s = FrameSampler("every_nth", every_nth=2)
+    assert sum(1 for i in range(100) if s.should_process(_frame(i))) == 50
+
+
+def test_unknown_sampling_strategy_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown sampling strategy"):
+        FrameSampler("sometimes")
 
 
 # --------------------------------------------------------------------------

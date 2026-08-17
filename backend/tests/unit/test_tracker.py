@@ -247,3 +247,79 @@ def test_capture_guard_defaults_false() -> None:
 def test_empty_update_on_empty_tracker_is_safe() -> None:
     tracker = Tracker()
     assert tracker.update([], _ts(0)) == []
+
+
+# --------------------------------------------------------------------------
+# Phase 1 exit criterion, under noise
+# --------------------------------------------------------------------------
+
+
+def test_track_continuity_under_realistic_detector_noise() -> None:
+    """>=80% single-track-ID rate with 15% missed frames and 6px jitter.
+
+    This is the Phase 1 exit criterion measured directly. Defaults were tuned
+    against it with scripts/bench_tracker.py; this guards the tuning from
+    silent regression.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(1234)
+    trials = 40
+    clean = 0
+
+    for _ in range(trials):
+        tracker = Tracker()  # defaults under test
+        ids: set[str] = set()
+
+        for i in range(60):
+            if rng.random() < 0.15:
+                tracker.update([], _ts(i))
+                continue
+            y = 200 + i * 7
+            size = 45 + i * 2.2
+            jx, jy = rng.normal(0, 6.0, 2)
+            det = _det(
+                i,
+                (600 + jx, y + jy, 600 + size + jx, y + size + jy),
+                conf=float(rng.uniform(0.5, 0.95)),
+            )
+            ids |= {t.track_id for t in tracker.update([det], _ts(i))}
+
+        if len(ids) == 1:
+            clean += 1
+
+    rate = clean / trials
+    assert rate >= 0.80, f"single-track-ID rate {rate:.0%} is below the 80% criterion"
+
+
+def test_two_nearby_potholes_do_not_merge_under_noise() -> None:
+    """The counterweight to a loose IoU gate: distinct defects stay distinct.
+
+    Merging two potholes into one track would silently lose a report.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(99)
+    trials = 30
+    correct = 0
+
+    for _ in range(trials):
+        tracker = Tracker()
+        ids: set[str] = set()
+
+        for i in range(60):
+            y = 200 + i * 7
+            size = 45 + i * 2.2
+            dets = []
+            for lane_x in (600.0, 690.0):
+                jx, jy = rng.normal(0, 4.0, 2)
+                dets.append(
+                    _det(i, (lane_x + jx, y + jy, lane_x + size + jx, y + size + jy))
+                )
+            ids |= {t.track_id for t in tracker.update(dets, _ts(i))}
+
+        if len(ids) == 2:
+            correct += 1
+
+    rate = correct / trials
+    assert rate >= 0.80, f"separation rate {rate:.0%} is too low; tracks are merging"

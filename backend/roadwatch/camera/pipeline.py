@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# Consecutive failed reads from a *live* source before the capture thread
+# gives up. A file signals exhaustion explicitly and never reaches this.
+_MAX_READ_FAILURES = 100
+
 
 @dataclass
 class SessionMetrics:
@@ -131,8 +135,21 @@ class CaptureThread:
         queue_size: int = 2,
         buffer_size: int = 30,
         metrics: SessionMetrics | None = None,
+        drop_frames: bool = True,
     ) -> None:
+        """
+        Args:
+            drop_frames: True for live capture — the camera cannot be paused,
+                so a slow consumer must lose frames rather than stall the
+                producer or grow the queue (FR-CAM-02).
+
+                False for offline file analysis, where the producer *can* be
+                paused. Dropping 94% of a recorded video means not analysing
+                it, which defeats the point of the standing regression fixture
+                (NFR-TST-02). A file has no real-time constraint to violate.
+        """
         self._source = source
+        self._drop_frames = drop_frames
         self._queue: Queue[Frame] = Queue(maxsize=queue_size)
         self.buffer = FrameBuffer(maxlen=buffer_size)
         self.metrics = metrics or SessionMetrics()
@@ -158,20 +175,41 @@ class CaptureThread:
                 frame = self._source.read()
 
                 if frame is None:
-                    # For a file this is EOF. For a live source it is a
-                    # transient failure the source is already handling.
+                    if self._source.is_exhausted:
+                        # Normal end of a file. Not a failure, and retrying it
+                        # would only spin.
+                        log.info("capture_stream_ended", frames_read=self.metrics.frames_read)
+                        break
+
+                    # A live source glitched; it may recover.
                     consecutive_failures += 1
                     self.metrics.read_failures += 1
-                    if getattr(self._source, "fps", 0.0) and consecutive_failures > 100:
-                        log.info("capture_stream_ended")
+                    if consecutive_failures > _MAX_READ_FAILURES:
+                        log.error(
+                            "capture_giving_up",
+                            consecutive_failures=consecutive_failures,
+                            frames_read=self.metrics.frames_read,
+                        )
                         break
-                    if consecutive_failures > 100:
-                        break
+                    # Yield rather than spin: the source's own reconnect
+                    # backoff needs time to act.
+                    time.sleep(0.01)
                     continue
 
                 consecutive_failures = 0
                 self.metrics.frames_read += 1
                 self.buffer.append(frame)
+
+                if not self._drop_frames:
+                    # Offline analysis: block until the consumer has room. The
+                    # timeout keeps stop() responsive.
+                    while not self._stop.is_set():
+                        try:
+                            self._queue.put(frame, timeout=0.1)
+                            break
+                        except Full:
+                            continue
+                    continue
 
                 try:
                     self._queue.put_nowait(frame)
@@ -240,8 +278,16 @@ class FrameSampler:
     """Decides which frames run inference (FR-CAM-03).
 
     Detection is the expensive step; tracking interpolates between detections.
-    Adaptive mode targets a configured inference rate and adjusts the stride to
-    hold it as scene complexity and thermal headroom change.
+
+    ``adaptive`` paces against the **wall clock**, which is what a live camera
+    needs: it holds a target inference rate as scene complexity and thermal
+    headroom vary, dropping work rather than falling behind the road.
+
+    That same behaviour is wrong for offline file analysis. Replaying a 10 s
+    video in 0.3 s leaves only a handful of wall-clock slots, so almost every
+    frame is skipped and the run is not a meaningful test of detection. Use
+    ``every_frame`` or ``every_nth`` for file replay, which are paced by frame
+    id and therefore independent of how fast the file is read.
     """
 
     def __init__(
@@ -251,6 +297,11 @@ class FrameSampler:
         every_nth: int = 2,
         target_fps: float = 15.0,
     ) -> None:
+        if strategy not in ("every_frame", "every_nth", "adaptive"):
+            raise ValueError(
+                f"unknown sampling strategy '{strategy}'; expected "
+                "every_frame, every_nth, or adaptive"
+            )
         self._strategy = strategy
         self._every_nth = max(1, every_nth)
         self._target_fps = target_fps
@@ -263,8 +314,6 @@ class FrameSampler:
         if self._strategy == "every_nth":
             return frame.frame_id % self._every_nth == 0
 
-        # Adaptive: run inference when enough time has passed to hold the
-        # target rate, rather than on a fixed frame stride.
         now = time.monotonic()
         interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.0
         if now - self._last_inference >= interval:

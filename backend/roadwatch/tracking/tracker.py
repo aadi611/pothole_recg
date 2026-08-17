@@ -143,6 +143,28 @@ class TrackedObject:
 class Tracker:
     """Greedy IoU tracker with Kalman prediction.
 
+    Defaults are measured, not guessed — see ``scripts/bench_tracker.py``,
+    which sweeps them against simulated detector noise:
+
+    ==========================  ==========  ==========
+    config                      continuity  separation
+    ==========================  ==========  ==========
+    iou=0.30 max_age=10                54%         86%
+    iou=0.20 max_age=10                80%         98%
+    iou=0.15 max_age=15                90%        100%
+    ==========================  ==========  ==========
+
+    *continuity* = one approaching pothole yielding exactly one track id under
+    15% missed frames and 6px box jitter (the Phase 1 exit criterion is >=80%).
+    *separation* = two distinct potholes staying two tracks.
+
+    A tighter IoU gate is worse on **both** counts, which is initially
+    counter-intuitive. The reason is that the Kalman filter already predicts
+    where the box should be, so the gate is not protecting against
+    displacement — it is only rejecting the detector's own jitter. Tightening
+    it fragments one pothole into several tracks, and each fragment is a fresh
+    unconfirmed track that can then mis-associate.
+
     Args:
         iou_threshold: Minimum IoU to associate a detection with a track.
         max_age: Frames a track survives unmatched before going LOST
@@ -154,8 +176,8 @@ class Tracker:
     def __init__(
         self,
         *,
-        iou_threshold: float = 0.3,
-        max_age: int = 10,
+        iou_threshold: float = 0.15,
+        max_age: int = 15,
         min_hits: int = 3,
     ) -> None:
         if not 0.0 < iou_threshold < 1.0:

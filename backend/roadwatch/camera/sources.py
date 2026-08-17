@@ -49,6 +49,7 @@ class VideoFileSource:
         self._fps = 0.0
         self._start_wall = 0.0
         self._epoch = datetime.now(UTC)
+        self._exhausted = False
 
     def open(self) -> None:
         if not self._path.is_file():
@@ -81,7 +82,10 @@ class VideoFileSource:
 
         ok, image = self._cap.read()
         if not ok or image is None or image.size == 0:
-            # For a file this means end of stream, which is normal.
+            # For a file this means end of stream, which is normal. Mark it so
+            # the consumer stops immediately instead of retrying a file that
+            # will never produce another frame.
+            self._exhausted = True
             return None
 
         # Presentation timestamp from the container, so replay is
@@ -115,6 +119,10 @@ class VideoFileSource:
     @property
     def fps(self) -> float:
         return self._fps
+
+    @property
+    def is_exhausted(self) -> bool:
+        return self._exhausted
 
 
 class WebcamSource:
@@ -223,6 +231,12 @@ class WebcamSource:
     def fps(self) -> float:
         return self._fps
 
+    @property
+    def is_exhausted(self) -> bool:
+        """Never. A live camera can always recover, so the consumer's
+        consecutive-failure ceiling decides when to give up."""
+        return False
+
 
 class SyntheticSource:
     """Generated frames, for tests that need no media files.
@@ -259,3 +273,7 @@ class SyntheticSource:
     @property
     def fps(self) -> float:
         return 30.0
+
+    @property
+    def is_exhausted(self) -> bool:
+        return self._frame_id >= self._total
