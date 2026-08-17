@@ -1,0 +1,53 @@
+# Secrets — never read
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# Heavy binaries and model artifacts
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.engine
+*.weights
+
+# Datasets and media — huge, no value in context
+datasets/
+data/raw/
+**/*.mp4
+**/*.avi
+**/*.mov
+**/*.jpg
+**/*.jpeg
+**/*.png
+!docs/**/*.png
+evidence/
+storage/
+
+# Lockfiles and build output
+package-lock.json
+yarn.lock
+poetry.lock
+uv.lock
+dist/
+build/
+web/dist/
+*.egg-info/
+
+# Caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+.venv/
+venv/
+
+# Local DB and logs
+*.db
+*.sqlite3
+logs/
+*.log

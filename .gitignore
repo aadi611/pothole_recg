@@ -1,0 +1,63 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+kaggle.json
+
+# Model weights — versioned by hash in docs/MODEL_CARD.md, never committed (NFR-DEV-06)
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.engine
+*.weights
+
+# Datasets — fetched via scripts/fetch_dataset.py, never committed
+datasets/
+data/raw/
+data/processed/
+
+# Evidence and runtime storage — contains personal data (NFR-PRV)
+evidence/
+storage/
+
+# Test fixtures are the exception: drive.mp4 + drive.gpx are the standing
+# regression input (NFR-TST-02) and MUST be committed. Keep them small.
+*.mp4
+*.avi
+*.mov
+!backend/tests/fixtures/*.mp4
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+web/dist/
+
+# Local DB and logs
+*.db
+*.sqlite3
+*.sqlite3-journal
+logs/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
