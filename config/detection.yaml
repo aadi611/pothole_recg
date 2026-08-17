@@ -1,0 +1,46 @@
+# Detector selection and thresholds (FR-DET-03, FR-DET-05).
+
+# Registered in roadwatch/detection/registry.py. Swapping this must not
+# require a code change anywhere outside detection/.
+detector: "yolo"
+
+model:
+  # Populated by scripts/train_detector.py. Weights are referenced by hash,
+  # never committed (NFR-DEV-06); see docs/MODEL_CARD.md.
+  weights_path: "models/pothole-yolov8n.pt"
+  # Verified at load time against the weights file. A mismatch is a hard
+  # failure, not a warning - it means the file changed underneath us.
+  weights_sha256: null
+  input_size: 640
+  device: "cuda"  # cpu | cuda | mps
+  half_precision: true
+
+thresholds:
+  confidence: 0.35
+  iou: 0.45
+  max_detections: 30
+
+# Active classes. Others are defined in HazardClass and can be switched on
+# here without touching code (FR-DET-03), once the weights support them.
+classes:
+  pothole:
+    enabled: true
+    model_class_id: 0
+  crack:
+    enabled: false
+    model_class_id: 1
+  surface_damage:
+    enabled: false
+    model_class_id: 2
+  manhole:
+    enabled: false
+    model_class_id: 3
+  debris:
+    enabled: false
+    model_class_id: 4
+
+sampling:
+  # every_frame | every_nth | adaptive (FR-CAM-03)
+  strategy: "adaptive"
+  every_nth: 2
+  target_inference_fps: 15

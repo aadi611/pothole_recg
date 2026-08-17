@@ -1,0 +1,41 @@
+# Camera geometry and distance thresholds (FR-PRX-04).
+#
+# These numbers decide when a driver gets warned. They are starting points to
+# be tuned against real footage, NOT truth. See docs/DISTANCE_LIMITATIONS.md
+# before trusting any of them.
+
+camera:
+  id: "cam-front-01"
+  # Ground to lens, in metres. MEASURE THIS - do not estimate. Planar distance
+  # error scales roughly linearly with mount-height error.
+  mount_height_m: 1.25
+  # Negative = angled down toward the road.
+  pitch_deg: -8.0
+  horizontal_fov_deg: 78.0
+  resolution: [1280, 720]
+  # Optional intrinsics from chessboard calibration (FR-PRX-08). When present
+  # this supersedes horizontal_fov_deg.
+  calibration_file: null
+
+estimator: "planar"
+fallback_estimator: "bbox_scale"
+
+thresholds_m:
+  detect: 20.0
+  warn: 10.0
+  capture: 4.0
+
+time_to_pothole_s:
+  # At 80 km/h, 10 m is under half a second of reaction time. Whichever of
+  # distance or time fires first wins (FR-PRX-05).
+  warn: 1.5
+
+confidence:
+  # Below this, warn the driver but do not auto-capture, and record
+  # distance_at_capture_m as null (FR-PRX-06).
+  min_distance_confidence: 0.4
+
+smoothing:
+  # Moving-average window over per-frame estimates, to stop the readout
+  # jittering and the thresholds flapping (FR-PRX-07).
+  window_frames: 5

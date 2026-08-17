@@ -1,0 +1,30 @@
+# Driver alerting (FR-ALT-02, FR-ALT-05).
+#
+# The driver's attention is the safety-critical resource here. Every value in
+# this file trades off warning usefully against adding noise to someone who is
+# operating a vehicle. When in doubt, alert less.
+
+# Per-track. One pothole gets at most one warn and one near, ever (FR-ALT-02).
+cooldown_s: 6.0
+
+# Never two alerts closer together than this, across all tracks. On a badly
+# broken road the detector will find defects continuously; without this the
+# system becomes a rattle the driver learns to ignore.
+global_min_gap_s: 1.5
+
+sinks: ["screen", "tts"]
+
+tts:
+  engine: "pyttsx3"
+  warn_template: "Pothole ahead, {distance_m:.0f} meters"
+  near_template: "Pothole very near"
+  # Speak at a slightly raised rate: a warning that arrives after the pothole
+  # is worse than useless.
+  rate_wpm: 190
+
+# Parked or crawling in traffic should be silent (FR-ALT-05).
+suppress_below_speed_kmh: 5.0
+
+# Detection to audible/visible alert (FR-ALT-06). Measured and logged; exceeding
+# it is a logged warning, not a crash.
+latency_budget_ms: 300
