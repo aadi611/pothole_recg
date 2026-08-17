@@ -99,6 +99,10 @@ ignore = [
 # example in its docs uses it, and renaming would make the pipeline harder to
 # compare against upstream references.
 "roadwatch/training/augment.py" = ["N812"]
+# Kalman filter matrices use the conventional single-capital symbols from the
+# literature (F, H, P, Q, R, S, K). Lowercasing them would make the
+# implementation harder to check against any standard reference.
+"roadwatch/tracking/tracker.py" = ["N806"]
 
 [tool.mypy]
 python_version = "3.11"
