@@ -36,19 +36,54 @@ Updated at the end of every work session (per `spec/01_AGENT_BRIEF.md`).
 
 ---
 
-## Next up — Phase 1 (detection pipeline on recorded video)
+### Phase 1 — Detection pipeline on recorded video
 
 `FR-CAM-01..06, FR-DET-01..06, FR-TRK-01..06`
 
-Critical path, in order:
+- [x] Frame sources: video file, webcam/RTSP, synthetic [FR-CAM-01, FR-CAM-04]
+- [x] Threaded capture, bounded queue, frame dropping [FR-CAM-02]
+- [x] Rolling evidence buffer [FR-CAM-05]
+- [x] Sampling strategies: every_frame / every_nth / adaptive [FR-CAM-03]
+- [x] Session metrics: FPS, inference ms, drops [FR-CAM-06]
+- [x] `Detector` protocol + registry [FR-DET-01]
+- [x] `YoloDetector` with hash-derived `model_version` [FR-DET-04..06]
+- [x] Config-driven class map [FR-DET-03]
+- [x] Tracker: IoU + Kalman, stable IDs, N-frame confirmation [FR-TRK-01..02]
+- [x] Track bookkeeping, LOST handling, capture guard [FR-TRK-04..06]
+- [x] State machine through `DETECTED` [FR-TRK-03]
+- [x] `edge_app` CLI with annotated display
+- [x] `scripts/train_detector.py` + model card generation
+- [ ] **Train on real pothole data** [FR-DET-02] — **blocked: needs dataset**
 
-1. **Dataset** — fetch Roboflow pothole set (`scripts/fetch_dataset.py`)
-2. **Train** — YOLOv8n on RTX 3060; record mAP@50 and mAP@50-95 in `docs/MODEL_CARD.md` [FR-DET-02]
-3. **`YoloDetector`** — implement the `Detector` protocol [FR-DET-01]
-4. **Camera sources** — video file first (it is how everything is tested), threaded with bounded buffer [FR-CAM-01..02]
-5. **Tracker** — IoU + Kalman, stable track IDs, N-frame confirmation [FR-TRK-01..02]
-6. **State machine** — through `DETECTED` [FR-TRK-03]
-7. **`edge_app` CLI** — `--source video.mp4 --display`
+**Measured on RTX 3060** (stock yolov8n, 300-frame video):
+
+| | |
+|---|---|
+| Inference | 7.8 ms/frame |
+| Effective FPS | 63 (target: ≥15, NFR-REL-06) |
+| Frames read / processed / dropped | 300 / 300 / 0 |
+
+**Tracker tuning** — `scripts/bench_tracker.py` measured the association
+parameters rather than guessing them:
+
+| config | continuity | separation |
+|---|---|---|
+| iou=0.30 max_age=10 | 54% | 86% |
+| iou=0.15 max_age=15 | **90%** | **100%** |
+
+The original default failed the ≥80% exit criterion. Both metrics are now
+regression-tested in `tests/unit/test_tracker.py`.
+
+**Verified:** 107 unit tests pass · ruff clean · mypy strict clean · boundary check passes
+
+### Phase 1 exit criteria status
+
+| Criterion | Status |
+|---|---|
+| Runs a 2-min video without crashing or leaking | Partial — 10s synthetic clip clean; needs the real fixture |
+| Same pothole holds one track ID in ≥80% of checks | **Met** — 90% measured under realistic noise |
+| Unit tests for tracker matching and state transitions | **Met** — 107 tests |
+| Meets target FPS on agreed hardware | **Met** — 63 FPS vs ≥15 target |
 
 ---
 
@@ -56,11 +91,23 @@ Critical path, in order:
 
 | Item | Blocker | Owner |
 |---|---|---|
-| PostGIS, `docker compose up` | Docker Desktop not installed | **User** — installing |
+| **Train the pothole model** [FR-DET-02] | No dataset — every good public set needs an account | **User** — Roboflow export URL |
 | `tests/fixtures/drive.mp4` + `drive.gpx` | Not yet recorded | **User** — 2 min real driving footage + GPS log |
-| Camera calibration (mount height, pitch, FOV) | Needs real vehicle measurement | **User** — Phase 2, not blocking yet |
-| First authority to seed | Target city not confirmed | **User** — Phase 5, not blocking yet |
+| PostGIS, `docker compose up` | Docker Desktop not installed | **User** — installing |
+| Camera calibration (mount height, pitch, FOV) | Needs real vehicle measurement | **User** — Phase 2 |
+| First authority to seed | Target city not confirmed | **User** — Phase 5 |
 
-The fixture video is the one that matters soonest: it is the standing
-regression input for every phase's exit criteria (NFR-TST-02), and it doubles
-as calibration ground truth for Phase 2.
+**Dataset access, investigated 2026-08-18:** Roboflow export links are
+account-specific and expire; RDD2022's S3 bucket returns 403; the Kaggle sets
+need an API token; figshare serves an HTML interstitial rather than the file.
+The only unauthenticated set found (`keremberke/pothole-segmentation`) has 99
+images and ships no YOLO label files — far too small and in the wrong format.
+So this genuinely needs a human with an account.
+
+To unblock: sign in at https://universe.roboflow.com/search?q=pothole, pick a
+dataset, **Download → YOLOv8 → show download code**, and pass the URL to
+`python scripts/fetch_dataset.py --url '<link>'`.
+
+The fixture video matters next: it is the standing regression input for every
+phase's exit criteria (NFR-TST-02) and doubles as Phase 2 calibration ground
+truth.
