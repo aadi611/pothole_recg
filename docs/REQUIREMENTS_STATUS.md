@@ -20,8 +20,8 @@ same commit that changes the status.
 | FR-CAM (6) | 6 | – | – | – | – |
 | FR-DET (8) | 5 | – | – | 2 | 1 |
 | FR-TRK (6) | 6 | – | – | – | – |
-| FR-PRX (11) | – | – | 9 | 2 | – |
-| FR-ALT (7) | – | – | 7 | – | – |
+| FR-PRX (11) | 8 | – | 1 | 2 | – |
+| FR-ALT (7) | 6 | 1 | – | – | – |
 | FR-EVD (9) | – | – | 9 | – | – |
 | FR-GEO (8) | – | – | 8 | – | – |
 | FR-RPT (6) | – | – | 5 | 1 | – |
@@ -30,8 +30,8 @@ same commit that changes the status.
 | FR-API (8) | – | – | 8 | – | – |
 | FR-SYN (6) | – | – | 6 | – | – |
 | FR-UI (18) | – | – | 16 | 2 | – |
-| NFR (43) | 9 | 6 | 24 | 4 | – |
-| **Total (151)** | **26** | **6** | **106** | **17** | **1** |
+| NFR (43) | 11 | 6 | 22 | 4 | – |
+| **Total (151)** | **42** | **7** | **84** | **17** | **1** |
 
 ---
 
@@ -70,26 +70,32 @@ same commit that changes the status.
 | FR-TRK-05 | DONE | `TrackedObject.has_been_captured` |
 | FR-TRK-06 | DONE | peak_confidence, frames_seen, first/last_seen |
 
-## FR-PRX — Proximity & distance ← **PHASE 2, NEXT**
+## FR-PRX — Proximity & distance ✅ MVP COMPLETE
 
-| ID | Status | Notes |
+| ID | Status | Where |
 |---|---|---|
-| FR-PRX-01 | DONE | Enforced in `state/machine.py`: no distance ⇒ no advance past DETECTED |
-| FR-PRX-02 | TODO | Planar road-plane estimator |
-| FR-PRX-03 | TODO | bbox-scale fallback |
+| FR-PRX-01 | DONE | `state/machine.py` — no distance ⇒ no advance past DETECTED. Verified end to end |
+| FR-PRX-02 | DONE | `distance/planar.py` — checked against hand-computed geometry |
+| FR-PRX-03 | DONE | `distance/bbox_scale.py` — confidence capped at 0.35 |
 | FR-PRX-04 | DONE | `config/proximity.yaml`, Pydantic-validated |
-| FR-PRX-05 | TODO | time-to-pothole from GPS speed |
-| FR-PRX-06 | DONE | `min_distance_confidence` gate in state machine |
-| FR-PRX-07 | TODO | Distance smoothing |
-| FR-PRX-08 | TODO | Calibration utility |
+| FR-PRX-05 | DONE | time-to-pothole from GPS speed |
+| FR-PRX-06 | DONE | `min_distance_confidence` gate |
+| FR-PRX-07 | DONE | `distance/smoothing.py` — per-track moving average |
+| FR-PRX-08 | TODO | Calibration utility (chessboard + two-point) |
 | FR-PRX-09 | LATER | Monocular depth |
 | FR-PRX-10 | LATER | Stereo |
-| FR-PRX-11 | TODO | `docs/DISTANCE_LIMITATIONS.md` |
+| FR-PRX-11 | DONE | `docs/DISTANCE_LIMITATIONS.md` |
 
-## FR-ALT — Driver alerting (Phase 2)
+## FR-ALT — Driver alerting
 
-All 7 TODO: two levels, cooldown + global gap, pluggable sinks, driving UI,
-speed suppression, 300 ms latency budget.
+| ID | Status | Where |
+|---|---|---|
+| FR-ALT-01 | DONE | `alerts/engine.py` — warn and near levels |
+| FR-ALT-02 | DONE | Per-track once-only, plus global gap with an escalation exemption |
+| FR-ALT-03 | DONE | `alerts/sinks.py` — console + TTS, failures isolated |
+| FR-ALT-04 | TODO | Driving UI constraints (Phase 4, frontend) |
+| FR-ALT-05 | PARTIAL | Implemented and tested; needs GPS speed wired in Phase 3 |
+| FR-ALT-06 | DONE | Latency budget measured per sink and logged |
 
 ## FR-EVD — Evidence capture (Phase 3)
 
@@ -165,12 +171,13 @@ FR-UI-01..16 TODO. FR-UI-17, 18 LATER.
 
 ## Build order from here
 
-1. **Phase 0 remainder** — `.env.example` ✅, Alembic + DB models, docker-compose, CI, README
-2. **Phase 2** — distance estimation + alerts (FR-PRX, FR-ALT) ← unblocked, pure logic
-3. **Phase 3** — GPS, evidence, local reports, sync queue
+1. ~~**Phase 0**~~ ✅ — env, Alembic + DB models, docker-compose, CI
+2. ~~**Phase 2**~~ ✅ — distance estimation + alerts (FR-PRX, FR-ALT)
+3. **Phase 3** ← NEXT — GPS (incl. GPX replay), evidence capture, local reports, sync queue
 4. **Phase 4** — API, PostGIS, React dashboard
 5. **Phase 5** — authority routing
 6. **Phase 6–7** — dedup, edge/mobile
 
-Phase 2 is entirely pure geometry and needs no dataset, so it proceeds while
-FR-DET-02 stays blocked.
+Phase 3 is I/O and storage, so like Phase 2 it proceeds while FR-DET-02 stays
+blocked on a dataset. Remaining Phase 0 items (README rewrite, `docker compose
+up` verification) need Docker installed.
