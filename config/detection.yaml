@@ -10,7 +10,7 @@ model:
   weights_path: "models/pothole-yolov8n.pt"
   # Verified at load time against the weights file. A mismatch is a hard
   # failure, not a warning - it means the file changed underneath us.
-  weights_sha256: null
+  weights_sha256: "2435fb8534976b2a25b0979017bafd8e4a1b2dc7c0da5a732ba817c06dec8537"
   input_size: 640
   device: "cuda"  # cpu | cuda | mps
   half_precision: true

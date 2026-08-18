@@ -36,15 +36,30 @@ class Source:
 
 
 SOURCES: dict[str, Source] = {
-    # Roboflow serves a direct zip for public datasets. YOLOv8 format: images
-    # plus .txt label files plus a data.yaml, already split train/valid/test.
+    # A Roboflow export mirrored on Hugging Face, which is what makes it
+    # fetchable without an account. Roboflow's own export links are
+    # account-specific and expire; RDD2022 on S3 returns 403, Kaggle needs an
+    # API token, and figshare serves an HTML interstitial instead of the file.
     "roboflow-pothole": Source(
         name="roboflow-pothole",
         url=(
-            "https://universe.roboflow.com/ds/dQTGqCJcBw?key=YourKeyHere"
+            "https://huggingface.co/datasets/rupesh002/pothole-detection-dataset"
+            "/resolve/main/pothole_dataset.zip"
         ),
-        description="Roboflow Universe pothole detection, YOLOv8 format",
-        licence="CC BY 4.0 — verify on the dataset page before deployment",
+        description="Roboflow pothole.v1i, YOLO format, 715 images (563 train / 152 val)",
+        licence="CC BY 4.0",
+    ),
+    # The domain-matched set: RDD2022 has a dedicated India split with real
+    # Indian road surfaces (docs/DATASETS.md). Two caveats before using it:
+    # 13 GB, and Pascal VOC XML rather than YOLO, so it needs conversion.
+    "rdd2022": Source(
+        name="rdd2022",
+        url=(
+            "https://huggingface.co/datasets/Duke5t/pothole_detection"
+            "/resolve/main/RDD2022.zip"
+        ),
+        description="RDD2022 road damage, 13GB, Pascal VOC (conversion required)",
+        licence="Open for research - verify terms for commercial deployment",
     ),
 }
 
@@ -106,6 +121,59 @@ def _verify_yolo_layout(root: Path) -> None:
             )
 
 
+
+def _flatten_single_root(root: Path) -> Path:
+    """Unwrap a zip whose contents sit inside one nested folder.
+
+    Roboflow exports extract to e.g. ``pothole.v1i.yolov4pytorch/``, which
+    would otherwise leave data.yaml one level below where callers expect it.
+    """
+    if (root / "data.yaml").is_file():
+        return root
+    children = [c for c in root.iterdir() if c.is_dir()]
+    if len(children) == 1 and (children[0] / "data.yaml").is_file():
+        inner = children[0]
+        for item in list(inner.iterdir()):
+            shutil.move(str(item), str(root / item.name))
+        inner.rmdir()
+    return root
+
+
+def _rewrite_data_yaml(root: Path) -> None:
+    """Point data.yaml at this machine.
+
+    Upstream exports commonly ship an absolute ``path:`` from whoever created
+    them - this one carried ``C:/Users/bhard/Downloads/...``. Ultralytics
+    resolves ``path`` against the working directory rather than against the
+    yaml file, so a relative path does not fix it either: it has to be
+    absolute and local.
+    """
+    data_yaml = root / "data.yaml"
+    if not data_yaml.is_file():
+        return
+
+    names = '["pothole"]'
+    for line in data_yaml.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("names:"):
+            names = line.split(":", 1)[1].strip()
+            break
+
+    body = "\n".join([
+        "# Rewritten by scripts/fetch_dataset.py.",
+        "# `path` is absolute because Ultralytics resolves it against the",
+        "# working directory rather than against this file.",
+        f"path: {root.resolve().as_posix()}",
+        "train: train/images",
+        "val: valid/images",
+        "",
+        "nc: 1",
+        f"names: {names}",
+        "",
+    ])
+    data_yaml.write_text(body, encoding="utf-8")
+    print(f"  rewrote {data_yaml.name} with a local absolute path")
+
+
 def fetch(source: Source, *, url_override: str | None, force: bool) -> Path:
     DATASETS.mkdir(parents=True, exist_ok=True)
     target = DATASETS / source.name
@@ -133,6 +201,8 @@ def fetch(source: Source, *, url_override: str | None, force: bool) -> Path:
     finally:
         archive.unlink(missing_ok=True)
 
+    target = _flatten_single_root(target)
+    _rewrite_data_yaml(target)
     _verify_yolo_layout(target)
     print(f"\nDataset ready: {target}")
     print(f"Licence: {source.licence}")

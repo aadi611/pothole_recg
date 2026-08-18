@@ -132,12 +132,20 @@ def test_hash_mismatch_is_fatal(tmp_path: Path) -> None:
 
 
 def test_absent_expected_hash_skips_verification(tmp_path: Path) -> None:
-    """weights_sha256: null is allowed during development."""
+    """weights_sha256: null is allowed during development.
+
+    The null is constructed here rather than read from the shipped config,
+    which now pins a real hash. A test that asserted the config value would
+    fail every time someone trains a model — that is a property of this
+    checkout, not of the code under test.
+    """
     blob = tmp_path / "w.pt"
     blob.write_bytes(b"unverified weights")
 
     config = load_detection()
-    assert config.model.weights_sha256 is None
+    config = config.model_copy(
+        update={"model": config.model.model_copy(update={"weights_sha256": None})}
+    )
     detector = YoloDetector(config, weights_path=blob)
 
     # Gets past verification, then fails on the actual load - which is what
@@ -190,3 +198,27 @@ def test_warmup_and_detect_on_a_blank_frame() -> None:
         assert det.model_version == detector.model_version
 
     detector.close()
+
+
+def test_shipped_config_hash_matches_the_weights_on_disk() -> None:
+    """The pinned SHA-256 must match the actual weights file.
+
+    Guards the FR-DET-06 chain end to end: config pins a hash, the file
+    hashes to it, and model_version derives from it. A mismatch means the
+    recorded mAP in docs/MODEL_CARD.md describes a different model than the
+    one that would load.
+
+    Skipped when the weights are absent, since they are gitignored.
+    """
+    config = load_detection()
+    weights = Path(__file__).resolve().parents[3] / config.model.weights_path
+
+    if not weights.is_file():
+        pytest.skip(f"weights not present: {config.model.weights_path}")
+    if config.model.weights_sha256 is None:
+        pytest.skip("no hash pinned in config")
+
+    assert weights_fingerprint(weights) == config.model.weights_sha256, (
+        "config/detection.yaml pins a hash that does not match the weights on "
+        "disk; retrain or update the config"
+    )

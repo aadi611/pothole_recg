@@ -126,3 +126,40 @@ contracts rely on enum members comparing equal to their string values and
 serialising to plain JSON strings across the API boundary. Changing it would
 be a silent deviation from the written contract for a stylistic gain. The
 ignore is documented inline in `backend/pyproject.toml`.
+
+---
+
+## ADR-005 — Training requires AC power on this laptop
+
+**Date:** 2026-08-19
+**Status:** Accepted
+
+**Context.** CUDA availability proved unstable during development:
+`torch.cuda.is_available()` returned True early in a session and False later,
+with no code change. `nvidia-smi` began failing with a permissions error.
+
+Diagnosis via `Get-PnpDevice -Class Display` showed the RTX 3060 reporting
+**`CM_PROB_PHANTOM`** — Windows held a stale record of the device, but it was
+not present on the PCI bus. `Get-CimInstance Win32_Battery` showed
+`BatteryStatus 1` (discharging). The NVIDIA driver files were intact (29
+packages in DriverStore, `nvapi64.dll` present), and `nvlddmkm` was Stopped.
+
+The cause is hybrid-graphics power management: on battery, the laptop powers
+the discrete GPU entirely off the bus. Plugging in restored it immediately
+(`BatteryStatus 2`, `CM_PROB_NONE`, `nvidia-smi` responding).
+
+**Decision.** Treat AC power as a precondition for training and for any
+GPU-backed benchmark. Do not attempt to work around it in code.
+
+**Consequence.** This is an environment condition, not a defect, so tests that
+need CUDA skip rather than fail — see `_cuda_available()` in
+`tests/unit/test_detector.py`. Anyone reproducing a training run or an
+inference benchmark must be on mains power, or their numbers will silently
+come from the CPU.
+
+Measured difference on this machine (yolov8n, 640px, 563 training images):
+CPU ~185 s/epoch, GPU ~5 s/epoch — roughly 35x. A run that takes ten minutes
+plugged in takes four hours on battery, which is enough of a gap that a
+misconfigured run is obvious from the clock alone.
+
+---

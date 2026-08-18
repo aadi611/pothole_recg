@@ -1,0 +1,13 @@
+{
+  "weights": "pothole-yolov8n.pt",
+  "sha256": "2435fb8534976b2a25b0979017bafd8e4a1b2dc7c0da5a732ba817c06dec8537",
+  "model_version": "yolo-2435fb853497",
+  "metrics": {
+    "metrics/precision(B)": 0.6702355935977736,
+    "metrics/recall(B)": 0.569672131147541,
+    "metrics/mAP50(B)": 0.6335299192546313,
+    "metrics/mAP50-95(B)": 0.4010354444253269,
+    "fitness": 0.4010354444253269
+  },
+  "trained_at": "2026-08-18T20:20:44.112645+00:00"
+}
