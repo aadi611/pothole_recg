@@ -1,14 +1,16 @@
-"""Edge runtime — the vehicle-side pipeline (Phase 1 scope).
+"""Edge runtime — the vehicle-side pipeline (Phases 1-2).
 
-Wires camera → detection → tracking → state machine and renders an annotated
-view. Distance estimation, alerts, evidence capture, and GPS arrive in Phases
-2 and 3; the state machine already refuses to advance past ``DETECTED``
-without a distance estimate, so this build cannot alert on mere presence
-(FR-PRX-01).
+Wires camera → detection → tracking → distance → state machine → alerts, and
+renders an annotated view.
+
+Evidence capture, GPS, and the local report queue arrive in Phase 3. Until GPS
+exists, ``speed_kmh`` is None everywhere, which means the speed-suppression
+rule (FR-ALT-05) cannot yet silence alerts when the vehicle is stationary.
 
 Usage:
     python -m roadwatch.edge_app --source tests/fixtures/drive.mp4 --display
     python -m roadwatch.edge_app --source 0 --weights models/pothole.pt
+    python -m roadwatch.edge_app --source drive.mp4 --no-alerts
 """
 
 from __future__ import annotations
@@ -23,12 +25,18 @@ from typing import TYPE_CHECKING
 
 import cv2
 
+from roadwatch.alerts.engine import AlertEngine
+from roadwatch.alerts.sinks import build_sinks
 from roadwatch.camera.pipeline import CaptureThread, FrameSampler, SessionMetrics
 from roadwatch.camera.sources import VideoFileSource, WebcamSource
-from roadwatch.core.config import load_detection, load_proximity
+from roadwatch.core.config import load_alerts, load_detection, load_proximity
+from roadwatch.core.contracts import TrackState
 from roadwatch.core.errors import RoadWatchError
 from roadwatch.core.logging import bind_session, configure_logging, get_logger
 from roadwatch.detection import registry
+from roadwatch.distance.bbox_scale import BBoxScaleDistanceEstimator
+from roadwatch.distance.planar import PlanarDistanceEstimator
+from roadwatch.distance.smoothing import DistanceSmoother
 from roadwatch.state.machine import StateMachine, StateThresholds
 from roadwatch.tracking.tracker import Tracker
 
@@ -80,9 +88,17 @@ def _draw(frame_image: cv2.typing.MatLike, tracks: list[TrackedObject], metrics:
         p2 = (int(box.x2), int(box.y2))
         cv2.rectangle(frame_image, p1, p2, colour, 2)
 
+        # "~11 m", never "11.34 m": the estimate does not justify decimals,
+        # and false precision invites misplaced trust (FR-UI-02).
+        distance_label = ""
+        if track.distance is not None and track.distance.distance_m != float("inf"):
+            distance_label = f" ~{track.distance.distance_m:.0f}m"
+            if track.distance.confidence < 0.4:
+                distance_label += "?"
+
         label = (
-            f"{track.hazard_class.value} {track.latest.confidence:.2f} "
-            f"[{track.state.value}] {track.track_id[:6]}"
+            f"{track.hazard_class.value} {track.latest.confidence:.2f}"
+            f"{distance_label} [{track.state.value}] {track.track_id[:6]}"
         )
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(frame_image, (p1[0], p1[1] - th - 6), (p1[0] + tw + 4, p1[1]), colour, -1)
@@ -154,6 +170,25 @@ def run(args: argparse.Namespace) -> int:
     )
     log.info("sampling_strategy", strategy=strategy)
 
+    # Distance estimation (FR-PRX-02/03). The planar estimator needs measured
+    # camera geometry; bbox_scale is the degraded fallback when calibration is
+    # absent, and caps its own confidence below the capture threshold.
+    estimator: PlanarDistanceEstimator | BBoxScaleDistanceEstimator
+    if args.estimator == "bbox_scale" or proximity_cfg.estimator == "bbox_scale":
+        estimator = BBoxScaleDistanceEstimator(proximity_cfg.camera)
+    else:
+        estimator = PlanarDistanceEstimator(proximity_cfg.camera)
+    smoother = DistanceSmoother(window=proximity_cfg.smoothing.window_frames)
+    log.info("distance_estimator", method=estimator.method)
+
+    alerts_cfg = load_alerts()
+    alert_engine = AlertEngine(
+        alerts_cfg,
+        build_sinks(alerts_cfg.sinks, rate_wpm=alerts_cfg.tts.rate_wpm)
+        if not args.no_alerts
+        else [],
+    )
+
     metrics = SessionMetrics()
     shutdown = _Shutdown()
     source = _build_source(args.source, realtime=args.realtime)
@@ -193,17 +228,46 @@ def run(args: argparse.Namespace) -> int:
                     tracks = tracker.update(detections, frame.timestamp)
 
                     for track in tracks:
+                        # Estimate, then smooth per track, so the readout does
+                        # not jitter and thresholds do not flap (FR-PRX-07).
+                        raw = estimator.estimate(
+                            track.latest, frame.shape, gps=None
+                        )
+                        track.distance = smoother.update(track.track_id, raw)
+
                         transition = machine.advance(
                             track_id=track.track_id,
                             current=track.state,
                             is_confirmed=track.hits >= args.min_hits,
-                            # Phase 2 supplies this. Until then every track
-                            # stops at DETECTED, which is exactly the
-                            # FR-PRX-01 guarantee.
-                            distance=None,
+                            distance=track.distance,
                         )
-                        if transition is not None:
-                            track.state = transition.to_state
+                        if transition is None:
+                            continue
+
+                        track.state = transition.to_state
+
+                        # Alerts are driven by the state machine, which has
+                        # already gated on distance - never on presence in
+                        # frame (FR-PRX-01, FR-ALT-01).
+                        if transition.to_state is TrackState.APPROACHING:
+                            alert_engine.alert(
+                                track_id=track.track_id,
+                                level="warn",
+                                distance=track.distance,
+                                speed_kmh=None,
+                            )
+                        elif transition.to_state is TrackState.VERY_NEAR:
+                            alert_engine.alert(
+                                track_id=track.track_id,
+                                level="near",
+                                distance=track.distance,
+                                speed_kmh=None,
+                            )
+
+                    # Bound per-track memory across a long drive (NFR-REL-07).
+                    live = {t.track_id for t in tracks}
+                    smoother.retain_only(live)
+                    alert_engine.retain_only(live)
 
                 if args.display:
                     annotated = frame.image.copy()
@@ -222,10 +286,12 @@ def run(args: argparse.Namespace) -> int:
         exit_code = 1
     finally:
         detector.close()
+        alert_engine.close()
         if args.display:
             cv2.destroyAllWindows()
 
         summary = metrics.snapshot()
+        summary["alerts_issued"] = len(alert_engine.issued)
         log.info("session_summary", session_id=session_id, **summary)
 
         print("\n--- session summary ---")
@@ -252,6 +318,14 @@ def main() -> int:
         help="Play a video file at its native frame rate rather than as fast as possible",
     )
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after N frames (0 = all)")
+    parser.add_argument(
+        "--estimator", choices=["planar", "bbox_scale"],
+        help="Override the configured distance estimator",
+    )
+    parser.add_argument(
+        "--no-alerts", action="store_true",
+        help="Run detection and state transitions without emitting alerts",
+    )
     parser.add_argument(
         "--sampling", choices=["every_frame", "every_nth", "adaptive"],
         help="Override the configured sampling strategy (file replay defaults to every_frame)",
