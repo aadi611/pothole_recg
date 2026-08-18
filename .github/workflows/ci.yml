@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: roadwatch
+          POSTGRES_PASSWORD: roadwatch
+          POSTGRES_DB: roadwatch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U roadwatch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        working-directory: backend
+        # CPU torch: CI has no GPU, and the CUDA wheels are ~2.5GB.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,detection]"
+
+      - name: Module boundaries
+        # The architectural guarantee: nothing outside detection/ imports the
+        # model library, nothing outside db/ imports SQLAlchemy (FR-DET-01).
+        run: python scripts/check_boundaries.py
+
+      - name: Lint
+        run: ruff check backend scripts
+
+      - name: Type check
+        working-directory: backend
+        run: mypy roadwatch/core roadwatch/detection roadwatch/distance roadwatch/tracking roadwatch/state
+
+      - name: Unit tests
+        working-directory: backend
+        env:
+          # CI has no GPU; the config default is cuda.
+          ROADWATCH_TEST_DEVICE: cpu
+        run: pytest tests/unit -q
+
+      - name: Migrations apply to real PostGIS
+        working-directory: backend
+        env:
+          ROADWATCH_DATABASE_URL: postgresql+psycopg://roadwatch:roadwatch@localhost:5432/roadwatch_test
+        # Geography columns and GiST indexes cannot be exercised on SQLite, so
+        # this is the only place the schema is genuinely verified.
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Integration tests
+        working-directory: backend
+        env:
+          ROADWATCH_DATABASE_URL: postgresql+psycopg://roadwatch:roadwatch@localhost:5432/roadwatch_test
+        run: pytest tests/integration -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    # Skipped until web/ exists (Phase 4).
+    if: ${{ hashFiles('web/package.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: npm ci
+      - working-directory: web
+        run: npm run build
+      - working-directory: web
+        run: npm run test

@@ -29,6 +29,23 @@ def _weights() -> Path | None:
     return next(iter(MODELS.glob("*.pt")), None)
 
 
+def _cuda_available() -> bool:
+    """Whether the configured device can actually run.
+
+    CUDA availability is not stable across a session: a laptop GPU can be
+    claimed by another process or enter a low-power state. Skipping is
+    correct here — an unavailable GPU is an environment condition, not a
+    defect in the detector.
+    """
+    if load_detection().model.device != "cuda":
+        return True
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
+
+
 # --------------------------------------------------------------------------
 # Registry — FR-DET-01
 # --------------------------------------------------------------------------
@@ -158,6 +175,7 @@ def test_disabling_a_class_removes_it_without_code_change() -> None:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(_weights() is None, reason="no local weights")
+@pytest.mark.skipif(not _cuda_available(), reason="configured CUDA device unavailable")
 def test_warmup_and_detect_on_a_blank_frame() -> None:
     config = load_detection()
     detector = YoloDetector(config, weights_path=_weights())

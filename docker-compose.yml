@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: roadwatch
+      POSTGRES_PASSWORD: roadwatch
+      POSTGRES_DB: roadwatch
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The API waits for this; without it migrations race the DB accepting
+      # connections and fail on a cold start.
+      test: ["CMD-SHELL", "pg_isready -U roadwatch -d roadwatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ROADWATCH_DATABASE_URL: postgresql+psycopg://roadwatch:roadwatch@db:5432/roadwatch
+      # Dev only. Generate a real one for any deployment (NFR-SEC-04).
+      ROADWATCH_JWT_SECRET: ${ROADWATCH_JWT_SECRET:-dev-only-change-me}
+      ROADWATCH_STORAGE_ROOT: /data/storage
+      ROADWATCH_LOG_LEVEL: ${ROADWATCH_LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage:/data/storage
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn roadwatch.server_app:app --host 0.0.0.0 --port 8000"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+
+volumes:
+  pgdata:
+  storage:
