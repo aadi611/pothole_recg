@@ -25,6 +25,65 @@ MODELS = ROOT / "models"
 DOCS = ROOT / "docs"
 
 
+def _make_progress_callback(total_epochs: int):  # type: ignore[no-untyped-def]
+    """A compact per-epoch progress line.
+
+    Ultralytics' own progress bars are wide, redraw in place, and scroll badly
+    once wrapped — hard to follow, and useless in a log file. This prints one
+    durable line per epoch with the numbers that actually matter, plus a bar
+    showing the best mAP@50 so far.
+    """
+    state = {"best": 0.0, "best_epoch": 0, "started": datetime.now(UTC)}
+
+    def _on_epoch_end(trainer) -> None:  # type: ignore[no-untyped-def]
+        metrics = getattr(trainer, "metrics", {}) or {}
+        epoch = int(getattr(trainer, "epoch", 0)) + 1
+
+        map50 = float(metrics.get("metrics/mAP50(B)", 0.0))
+        map5095 = float(metrics.get("metrics/mAP50-95(B)", 0.0))
+        precision = float(metrics.get("metrics/precision(B)", 0.0))
+        recall = float(metrics.get("metrics/recall(B)", 0.0))
+
+        marker = "  "
+        if map50 > state["best"]:
+            state["best"] = map50
+            state["best_epoch"] = epoch
+            marker = " *"  # new best
+
+        elapsed = (datetime.now(UTC) - state["started"]).total_seconds()
+        eta_min = (elapsed / epoch) * (total_epochs - epoch) / 60 if epoch else 0.0
+
+        filled = round(map50 * 24)
+        bar = "#" * filled + "-" * (24 - filled)
+
+        print(
+            f"ep {epoch:>3}/{total_epochs}  "
+            f"mAP50 {map50:.3f}  mAP50-95 {map5095:.3f}  "
+            f"P {precision:.3f}  R {recall:.3f}  "
+            f"[{bar}]{marker}  ETA {eta_min:4.1f}m",
+            flush=True,
+        )
+
+    return _on_epoch_end
+
+
+def _pinned_hash() -> str | None:
+    """The weights SHA-256 currently pinned in config/detection.yaml.
+
+    Read with a plain scan rather than importing the backend config loader:
+    this script must run without the backend package installed.
+    """
+    cfg = ROOT / "config" / "detection.yaml"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("weights_sha256:"):
+            value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            return None if value in ("null", "") else value
+    return None
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -132,6 +191,14 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--device", default="0", help="'0' for first CUDA device, 'cpu'")
     parser.add_argument("--name", default="pothole", help="Run name")
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="Replace the model pinned in config/detection.yaml",
+    )
+    parser.add_argument(
+        "--patience", type=int, default=20,
+        help="Epochs without improvement before early stopping (0 disables)",
+    )
     args = parser.parse_args()
 
     data = Path(args.data)
@@ -153,6 +220,8 @@ def main() -> int:
     started = datetime.now(UTC)
 
     model = YOLO(args.model)
+    model.add_callback("on_fit_epoch_end", _make_progress_callback(args.epochs))
+
     model.train(
         data=str(data),
         epochs=args.epochs,
@@ -162,7 +231,7 @@ def main() -> int:
         name=args.name,
         project=str(ROOT / "runs"),
         exist_ok=True,
-        patience=20,
+        patience=args.patience,
     )
 
     metrics_obj = model.val(data=str(data), device=args.device, verbose=False)
@@ -177,6 +246,24 @@ def main() -> int:
 
     MODELS.mkdir(parents=True, exist_ok=True)
     final = MODELS / f"pothole-{Path(args.model).stem}.pt"
+
+    # Refuse to clobber the model config currently pins. A short probe run
+    # would otherwise silently replace a good model with a worse one, and the
+    # only sign would be a hash mismatch at the next startup.
+    if final.is_file() and not args.overwrite:
+        pinned = _pinned_hash()
+        if pinned and _sha256(final) == pinned:
+            print(
+                f"\nerror: {final.name} is the model pinned in "
+                f"config/detection.yaml.\n"
+                f"Refusing to overwrite it. The new weights are at:\n"
+                f"  {best}\n"
+                f"Re-run with --overwrite to replace the pinned model, or pass "
+                f"--name to keep this run separate.",
+                file=sys.stderr,
+            )
+            return 1
+
     shutil.copy2(best, final)
 
     digest = _sha256(final)
