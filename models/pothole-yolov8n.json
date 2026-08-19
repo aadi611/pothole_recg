@@ -1,13 +1,15 @@
 {
   "weights": "pothole-yolov8n.pt",
-  "sha256": "86ea2c8837e8c1e61da5e8203790300c8219d05b2656fe9279f08c6eda67e8b8",
-  "model_version": "yolo-86ea2c8837e8",
+  "sha256": "2435fb8534976b2a25b0979017bafd8e4a1b2dc7c0da5a732ba817c06dec8537",
+  "model_version": "yolo-2435fb853497",
   "metrics": {
-    "metrics/precision(B)": 0.3031860993983864,
-    "metrics/recall(B)": 0.3319672131147541,
-    "metrics/mAP50(B)": 0.23944301942322194,
-    "metrics/mAP50-95(B)": 0.11861516509381767,
-    "fitness": 0.11861516509381767
+    "metrics/mAP50(B)": 0.6332,
+    "metrics/mAP50-95(B)": 0.4002,
+    "metrics/precision(B)": 0.6709,
+    "metrics/recall(B)": 0.5697
   },
-  "trained_at": "2026-08-18T20:31:34.279511+00:00"
+  "trained_at": "2026-08-18T20:31:34.279511+00:00",
+  "epochs_run": 97,
+  "best_epoch": 77,
+  "device": "cuda (RTX 3060)"
 }
