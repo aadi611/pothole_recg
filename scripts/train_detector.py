@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train the pothole detector (FR-DET-02).
+"""Train the pothole detector.
 
 Non-interactive. Records mAP@50 and mAP@50-95 plus the weights hash into
 ``docs/MODEL_CARD.md`` so every trained model is traceable (FR-DET-06,
