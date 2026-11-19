@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+
 """Module-boundary enforcement (NFR-DEV-04).
 
 Two architectural rules that are easy to state and easy to violate by accident:
