@@ -1,132 +1,281 @@
+
 """Migration and PostGIS integration tests.
 
-These need a real PostgreSQL with PostGIS — geography columns, GiST indexes,
-and radius queries have no SQLite equivalent, so they cannot be covered by the
-unit suite. Skipped automatically when no database is configured, so a
-developer without Docker still gets a green local run.
+These tests require a real PostgreSQL instance with PostGIS enabled.
+SQLite cannot validate geography columns, GiST indexes, or spatial queries.
 
-Set ``ROADWATCH_DATABASE_URL`` to enable.
+Set ROADWATCH_DATABASE_URL to enable these tests.
+
+WARNING:
+The migration fixture downgrades the configured database to base before
+reapplying migrations. Use a dedicated, disposable test database.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
 BACKEND = Path(__file__).resolve().parents[2]
 
-DATABASE_URL = os.environ.get("ROADWATCH_DATABASE_URL", "")
-_IS_POSTGRES = DATABASE_URL.startswith("postgresql")
+DATABASE_URL = os.getenv("ROADWATCH_DATABASE_URL", "")
+IS_POSTGRES = DATABASE_URL.startswith(("postgresql://", "postgresql+"))
+
+EXPECTED_TABLES = {
+    "users",
+    "devices",
+    "images",
+    "authorities",
+    "potholes",
+    "reports",
+    "submissions",
+    "status_events",
+    "detection_metrics",
+}
+
+SPATIAL_TABLES = ("potholes", "reports")
+
+POSTGIS_EXTENSION = "postgis"
+
 
 pytestmark = pytest.mark.skipif(
-    not _IS_POSTGRES, reason="needs ROADWATCH_DATABASE_URL pointing at PostGIS"
+    not IS_POSTGRES,
+    reason="Requires ROADWATCH_DATABASE_URL pointing to a PostGIS database",
 )
 
 
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
 @pytest.fixture(scope="module")
 def alembic_config() -> Config:
+    """Configure Alembic to use the integration-test database."""
     config = Config(str(BACKEND / "alembic.ini"))
-    config.set_main_option("script_location", str(BACKEND / "roadwatch/db/migrations"))
-    config.set_main_option("sqlalchemy.url", DATABASE_URL)
+
+    config.set_main_option(
+        "script_location",
+        str(BACKEND / "roadwatch/db/migrations"),
+    )
+
+    # Escape percent signs because ConfigParser uses interpolation.
+    config.set_main_option(
+        "sqlalchemy.url",
+        DATABASE_URL.replace("%", "%%"),
+    )
+
     return config
 
 
 @pytest.fixture(scope="module")
-def migrated(alembic_config: Config):
-    """Apply migrations from scratch, yield an engine, then tear down."""
+def migrated(alembic_config: Config) -> Generator[Engine, None, None]:
+    """Run migrations from scratch and provide a database engine.
+
+    The configured database is reset to the Alembic base revision before
+    migrations are applied.
+    """
     command.downgrade(alembic_config, "base")
     command.upgrade(alembic_config, "head")
-    engine = create_engine(DATABASE_URL)
-    yield engine
-    engine.dispose()
+
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
-def test_all_spec_tables_exist(migrated) -> None:
-    expected = {
-        "users", "devices", "images", "authorities", "potholes",
-        "reports", "submissions", "status_events", "detection_metrics",
-    }
-    with migrated.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public'"
-            )
-        )
-        actual = {r[0] for r in rows}
-    assert expected <= actual, f"missing: {expected - actual}"
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def fetch_all(engine: Engine, query: str, params: dict | None = None):
+    """Execute a query and return all rows."""
+    with engine.connect() as connection:
+        return connection.execute(
+            text(query),
+            params or {},
+        ).fetchall()
 
 
-def test_postgis_extension_is_installed(migrated) -> None:
-    with migrated.connect() as conn:
-        result = conn.execute(
-            text("SELECT extname FROM pg_extension WHERE extname = 'postgis'")
+def fetch_one(engine: Engine, query: str, params: dict | None = None):
+    """Execute a query and return the first row."""
+    with engine.connect() as connection:
+        return connection.execute(
+            text(query),
+            params or {},
         ).fetchone()
-    assert result is not None, "postgis extension was not created"
 
 
-def test_geography_columns_have_gist_indexes(migrated) -> None:
-    """Without these, dedup degrades to a full table scan per ingest.
+def get_gist_indexes(engine: Engine, table: str):
+    """Return GiST index definitions for a given table."""
+    return fetch_all(
+        engine,
+        """
+        SELECT indexname, indexdef
+        FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = :table
+          AND indexdef ILIKE '%USING gist%'
+        """,
+        {"table": table},
+    )
 
-    FR-DUP requires dedup to stay under 50 ms with 10k potholes in the table,
-    which is only achievable with a spatial index.
+
+# ---------------------------------------------------------------------------
+# Migration tests
+# ---------------------------------------------------------------------------
+
+def test_all_spec_tables_exist(migrated: Engine) -> None:
+    """Verify that all specification tables are created."""
+    rows = fetch_all(
+        migrated,
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_type = 'BASE TABLE'
+        """,
+    )
+
+    actual_tables = {row[0] for row in rows}
+    missing_tables = EXPECTED_TABLES - actual_tables
+
+    assert not missing_tables, (
+        f"Missing specification tables: {sorted(missing_tables)}"
+    )
+
+
+def test_postgis_extension_is_installed(migrated: Engine) -> None:
+    """Verify that the PostGIS extension is installed."""
+    result = fetch_one(
+        migrated,
+        """
+        SELECT extname
+        FROM pg_extension
+        WHERE extname = :extension
+        """,
+        {"extension": POSTGIS_EXTENSION},
+    )
+
+    assert result is not None, "PostGIS extension was not installed"
+
+
+# ---------------------------------------------------------------------------
+# Spatial index tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("table", SPATIAL_TABLES)
+def test_geography_columns_have_gist_indexes(
+    migrated: Engine,
+    table: str,
+) -> None:
+    """Verify that each spatial table has a GiST index on geom."""
+    indexes = get_gist_indexes(migrated, table)
+
+    geom_indexes = [
+        index
+        for index in indexes
+        if "geom" in index[1].lower()
+    ]
+
+    assert geom_indexes, (
+        f"{table} does not have a GiST index covering geom"
+    )
+
+
+@pytest.mark.parametrize("table", SPATIAL_TABLES)
+def test_exactly_one_gist_index_per_table(
+    migrated: Engine,
+    table: str,
+) -> None:
+    """Prevent duplicate GiST indexes from increasing write overhead."""
+    indexes = get_gist_indexes(migrated, table)
+
+    assert len(indexes) == 1, (
+        f"{table} has {len(indexes)} GiST indexes; "
+        f"expected exactly one. Found: {indexes}"
+    )
+
+    assert "geom" in indexes[0][1].lower(), (
+        f"The GiST index on {table} does not cover geom: {indexes[0][1]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spatial query performance tests
+# ---------------------------------------------------------------------------
+
+def test_radius_query_uses_the_spatial_index(migrated: Engine) -> None:
+    """Verify that PostgreSQL can use the spatial index for radius queries.
+
+    Disabling sequential scans for this EXPLAIN test makes the planner
+    consider the available GiST index even when the table is empty.
+
+    This validates index usability, not actual production query latency.
     """
-    with migrated.connect() as conn:
-        for table in ("potholes", "reports"):
-            rows = conn.execute(
-                text(
-                    "SELECT indexdef FROM pg_indexes "
-                    "WHERE tablename = :t AND indexdef ILIKE '%USING gist%'"
-                ),
-                {"t": table},
-            ).fetchall()
-            assert rows, f"{table} has no GiST index on geom"
+    with migrated.begin() as connection:
+        connection.execute(text("SET LOCAL enable_seqscan = off"))
 
-
-def test_exactly_one_gist_index_per_table(migrated) -> None:
-    """Regression guard: an early draft created two, doubling write cost."""
-    with migrated.connect() as conn:
-        for table in ("potholes", "reports"):
-            rows = conn.execute(
-                text(
-                    "SELECT indexname FROM pg_indexes "
-                    "WHERE tablename = :t AND indexdef ILIKE '%USING gist%'"
-                ),
-                {"t": table},
-            ).fetchall()
-            assert len(rows) == 1, f"{table} has {len(rows)} GiST indexes: {rows}"
-
-
-def test_radius_query_uses_the_spatial_index(migrated) -> None:
-    """The query dedup will run must plan as an index scan, not a seq scan."""
-    with migrated.connect() as conn:
-        plan = conn.execute(
+        plan = connection.execute(
             text(
-                "EXPLAIN SELECT id FROM potholes WHERE ST_DWithin("
-                "geom, ST_MakePoint(77.32, 28.57)::geography, 15)"
+                """
+                EXPLAIN
+                SELECT id
+                FROM potholes
+                WHERE ST_DWithin(
+                    geom,
+                    ST_SetSRID(ST_MakePoint(77.32, 28.57), 4326)::geography,
+                    15
+                )
+                """
             )
         ).fetchall()
-    text_plan = "\n".join(r[0] for r in plan)
-    # On an empty table Postgres may still choose a seq scan; assert the
-    # index exists and is usable rather than over-fitting to the planner.
-    assert "potholes" in text_plan
+
+    execution_plan = "\n".join(row[0] for row in plan)
+
+    assert (
+        "Index Scan" in execution_plan
+        or "Bitmap Index Scan" in execution_plan
+    ), (
+        "Radius query did not use a spatial index.\n"
+        f"Execution plan:\n{execution_plan}"
+    )
 
 
-def test_downgrade_then_upgrade_is_clean(alembic_config: Config, migrated) -> None:
-    """A migration that cannot be rolled back is not reversible in an incident."""
+# ---------------------------------------------------------------------------
+# Migration rollback tests
+# ---------------------------------------------------------------------------
+
+def test_downgrade_then_upgrade_is_clean(
+    alembic_config: Config,
+    migrated: Engine,
+) -> None:
+    """Verify that migrations can be rolled back and reapplied."""
     command.downgrade(alembic_config, "base")
     command.upgrade(alembic_config, "head")
 
-    with create_engine(DATABASE_URL).connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' AND table_name = 'reports'"
-            )
-        ).fetchone()
-    assert rows is not None
+    result = fetch_one(
+        migrated,
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'reports'
+        """,
+    )
+
+    assert result is not None, (
+        "The reports table was not recreated after migration rollback"
+    )
